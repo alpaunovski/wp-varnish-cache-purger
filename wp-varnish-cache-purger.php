@@ -39,6 +39,7 @@ if (!class_exists('WP_Varnish_Cache_Purger')) {
 
         private function __construct()
         {
+            add_action('init', [$this, 'ensure_event_scheduled']);
             add_action('admin_init', [$this, 'register_settings']);
             add_action('admin_menu', [$this, 'register_settings_page']);
             add_action('add_option_' . self::OPTION_NAME, [$this, 'maybe_reschedule_on_add'], 10, 2);
@@ -64,6 +65,16 @@ if (!class_exists('WP_Varnish_Cache_Purger')) {
         public static function deactivate(): void
         {
             wp_clear_scheduled_hook(self::CRON_HOOK);
+        }
+
+        /**
+         * Ensure the cron event exists in case it was cleared externally.
+         */
+        public function ensure_event_scheduled(): void
+        {
+            if (!wp_next_scheduled(self::CRON_HOOK)) {
+                $this->schedule_event();
+            }
         }
 
         /**
@@ -219,6 +230,11 @@ if (!class_exists('WP_Varnish_Cache_Purger')) {
             $settings = $this->get_settings();
             $hosts    = $settings['hosts'];
             $paths    = $settings['scheduled_paths'];
+            $this->log(sprintf(
+                'Scheduled purge started. Hosts: %d, Paths: %d',
+                count($hosts),
+                count($paths)
+            ));
 
             foreach ($hosts as $host) {
                 foreach ($paths as $path) {
@@ -791,6 +807,11 @@ if (!class_exists('WP_Varnish_Cache_Purger')) {
 
             wp_clear_scheduled_hook(self::CRON_HOOK);
             wp_schedule_event($timestamp, $interval, self::CRON_HOOK);
+            $this->log(sprintf(
+                'Scheduled purge (re)registered. Interval: %s, Next run (WP timezone): %s',
+                $interval,
+                $this->format_timestamp_for_log($timestamp)
+            ));
         }
 
         /**
@@ -858,6 +879,27 @@ if (!class_exists('WP_Varnish_Cache_Purger')) {
             }
 
             return new \DateTimeZone($timezone_name);
+        }
+
+        /**
+         * Write debug logs when WP_DEBUG is enabled.
+         */
+        private function log(string $message): void
+        {
+            if (defined('WP_DEBUG') && WP_DEBUG) {
+                error_log('[WP Varnish Cache Purger] ' . $message);
+            }
+        }
+
+        /**
+         * Format timestamps in WordPress timezone for logging.
+         */
+        private function format_timestamp_for_log(int $timestamp): string
+        {
+            $timezone = $this->get_wordpress_timezone();
+            $date = new \DateTimeImmutable('@' . $timestamp);
+
+            return $date->setTimezone($timezone)->format('Y-m-d H:i:s T');
         }
     }
 
