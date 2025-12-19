@@ -1,10 +1,10 @@
 <?php
 /**
  * Plugin Name:       WP Varnish Cache Purger
- * Plugin URI:        https://example.com/wp-varnish-cache-purger
  * Description:       Purge a Varnish cache whenever content is published or updated and on an automatic schedule.
  * Version:           1.0.0
- * Author:            Cloud Panel Tools
+ * Author:            Aleksandar Paunovski
+ * Author URI:        https://paunovsky.com
  * License:           GPL-2.0-or-later
  * License URI:       https://www.gnu.org/licenses/gpl-2.0.html
  * Text Domain:       wp-varnish-cache-purger
