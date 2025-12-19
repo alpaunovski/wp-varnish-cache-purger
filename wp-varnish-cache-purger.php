@@ -733,13 +733,22 @@ if (!class_exists('WP_Varnish_Cache_Purger')) {
 
             $response = wp_remote_request($url, $args);
             if (is_wp_error($response)) {
-                error_log(sprintf('[WP Varnish Cache Purger] Failed to purge %s (%s): %s', $url, $context, $response->get_error_message()));
+                $this->log(sprintf('Failed to purge %s (%s): %s', $url, $context, $response->get_error_message()));
                 return;
             }
 
             $code = (int) wp_remote_retrieve_response_code($response);
             if ($code >= 400) {
-                error_log(sprintf('[WP Varnish Cache Purger] Unexpected response %d while purging %s (%s)', $code, $url, $context));
+                $body = wp_remote_retrieve_body($response);
+                $headers = wp_remote_retrieve_headers($response);
+                $this->log(sprintf(
+                    'Unexpected response %d while purging %s (%s). Headers: %s. Body: %s',
+                    $code,
+                    $url,
+                    $context,
+                    $this->stringify_headers($headers),
+                    $this->truncate_for_log($body)
+                ));
             }
         }
 
@@ -900,6 +909,53 @@ if (!class_exists('WP_Varnish_Cache_Purger')) {
             $date = new \DateTimeImmutable('@' . $timestamp);
 
             return $date->setTimezone($timezone)->format('Y-m-d H:i:s T');
+        }
+
+        /**
+         * Normalize headers for error logging.
+         *
+         * @param mixed $headers
+         */
+        private function stringify_headers($headers): string
+        {
+            if (is_object($headers) && method_exists($headers, 'getAll')) {
+                $headers = $headers->getAll();
+            }
+
+            if (is_array($headers)) {
+                $parts = [];
+                foreach ($headers as $key => $value) {
+                    if (is_array($value)) {
+                        $value = implode(', ', $value);
+                    }
+                    $parts[] = $key . ': ' . $value;
+                }
+
+                return implode('; ', $parts);
+            }
+
+            if (is_string($headers)) {
+                return $headers;
+            }
+
+            return '';
+        }
+
+        /**
+         * Prevent excessive log sizes for response bodies.
+         */
+        private function truncate_for_log(string $body, int $limit = 1000): string
+        {
+            $body = trim($body);
+            if ('' === $body) {
+                return '(empty)';
+            }
+
+            if (strlen($body) <= $limit) {
+                return $body;
+            }
+
+            return substr($body, 0, $limit) . '...';
         }
     }
 
