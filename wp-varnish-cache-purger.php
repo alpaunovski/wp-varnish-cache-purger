@@ -108,6 +108,14 @@ if (!class_exists('WP_Varnish_Cache_Purger')) {
             );
 
             add_settings_field(
+                'wp_vcp_purge_server',
+                __('Direct Varnish Server (Optional)', 'wp-varnish-cache-purger'),
+                [$this, 'render_purge_server_field'],
+                'wp-vcp',
+                'wp_vcp_general_section'
+            );
+
+            add_settings_field(
                 'wp_vcp_schedule',
                 __('Schedule Interval', 'wp-varnish-cache-purger'),
                 [$this, 'render_schedule_field'],
@@ -237,9 +245,10 @@ if (!class_exists('WP_Varnish_Cache_Purger')) {
             ));
 
             foreach ($hosts as $host) {
+                $host_header = $this->get_host_header_for_endpoint($host);
                 foreach ($paths as $path) {
-                    $url = $this->build_url($host, $path);
-                    $this->send_purge_request($url, 'schedule');
+                    $url = $this->build_purge_request_url($host, $path);
+                    $this->send_purge_request($url, 'schedule', $host_header);
                 }
             }
         }
@@ -290,17 +299,30 @@ if (!class_exists('WP_Varnish_Cache_Purger')) {
             $urls     = [];
 
             foreach ($hosts as $host) {
-                $urls[] = $this->swap_host_in_url($permalink, $host);
+                $urls[] = [
+                    'url'  => $this->swap_host_in_url($permalink, $host),
+                    'host' => $host,
+                ];
 
                 // Purge homepage when posts change as it usually lists latest content.
                 if (!empty($settings['purge_home_on_post'])) {
-                    $urls[] = trailingslashit($host);
+                    $urls[] = [
+                        'url'  => trailingslashit($host),
+                        'host' => $host,
+                    ];
                 }
             }
 
-            $urls = array_unique(array_filter($urls));
-            foreach ($urls as $url) {
-                $this->send_purge_request($url, $context);
+            $urls = array_filter($urls);
+            foreach ($urls as $entry) {
+                if (!is_array($entry) || empty($entry['url']) || empty($entry['host'])) {
+                    continue;
+                }
+
+                [$path, $query] = $this->get_path_and_query($entry['url']);
+                $request_url = $this->build_purge_request_url($entry['host'], $path, $query);
+                $host_header = $this->get_host_header_for_endpoint($entry['host']);
+                $this->send_purge_request($request_url, $context, $host_header);
             }
         }
 
@@ -347,6 +369,29 @@ if (!class_exists('WP_Varnish_Cache_Purger')) {
             ><?php echo esc_textarea($hosts); ?></textarea>
             <p class="description">
                 <?php esc_html_e('Enter one Varnish endpoint (protocol + domain) per line.', 'wp-varnish-cache-purger'); ?>
+            </p>
+            <?php
+        }
+
+        /**
+         * Render direct Varnish server field.
+         */
+        public function render_purge_server_field(): void
+        {
+            $settings   = $this->get_settings();
+            $field_id   = 'wp_vcp_purge_server';
+            $field_name = self::OPTION_NAME . '[purge_server]';
+            ?>
+            <input
+                type="text"
+                id="<?php echo esc_attr($field_id); ?>"
+                name="<?php echo esc_attr($field_name); ?>"
+                value="<?php echo esc_attr($settings['purge_server']); ?>"
+                class="regular-text code"
+                placeholder="varnish.internal:6081"
+            />
+            <p class="description">
+                <?php esc_html_e('Send PURGE requests to this server (bypassing CDN/proxy). Host header is set from each endpoint above. Leave blank to purge the public URLs directly.', 'wp-varnish-cache-purger'); ?>
             </p>
             <?php
         }
@@ -536,6 +581,12 @@ if (!class_exists('WP_Varnish_Cache_Purger')) {
                     $sanitized['hosts'] = $this->sanitize_hosts($raw['hosts']);
                 }
 
+                if (!empty($raw['purge_server'])) {
+                    $sanitized['purge_server'] = $this->sanitize_purge_server($raw['purge_server']);
+                } else {
+                    $sanitized['purge_server'] = '';
+                }
+
                 if (!empty($raw['scheduled_paths'])) {
                     $sanitized['scheduled_paths'] = $this->sanitize_paths($raw['scheduled_paths']);
                 }
@@ -634,6 +685,24 @@ if (!class_exists('WP_Varnish_Cache_Purger')) {
         }
 
         /**
+         * Sanitize direct Varnish server address.
+         */
+        private function sanitize_purge_server($server): string
+        {
+            if (!is_string($server)) {
+                return '';
+            }
+
+            $server = trim($server);
+            if ('' === $server) {
+                return '';
+            }
+
+            $server = rtrim($server, '/');
+            return sanitize_text_field($server);
+        }
+
+        /**
          * Sanitize HH:MM time fields.
          */
         private function sanitize_time_field($time, string $fallback): string
@@ -677,6 +746,64 @@ if (!class_exists('WP_Varnish_Cache_Purger')) {
         }
 
         /**
+         * Build a purge URL against the direct Varnish server when configured.
+         */
+        private function build_purge_request_url(string $host, string $path, string $query = ''): string
+        {
+            $path = '/' . ltrim($path, '/');
+            $query = ltrim($query, '?');
+            $settings = $this->get_settings();
+            $purge_server = trim($settings['purge_server']);
+
+            if ('' === $purge_server) {
+                $url = $this->build_url($host, $path);
+            } else {
+                $purge_server = rtrim($purge_server, '/');
+                if (!preg_match('#^https?://#i', $purge_server)) {
+                    $purge_server = 'http://' . $purge_server;
+                }
+                $url = $purge_server . $path;
+            }
+
+            if ('' !== $query) {
+                $url .= '?' . $query;
+            }
+
+            return $url;
+        }
+
+        /**
+         * Extract host header value from an endpoint URL.
+         */
+        private function get_host_header_for_endpoint(string $host): string
+        {
+            $parts = wp_parse_url($host);
+            if (is_array($parts) && !empty($parts['host'])) {
+                return $parts['host'];
+            }
+
+            return '';
+        }
+
+        /**
+         * Extract path and query string from a URL.
+         *
+         * @return array{0:string,1:string}
+         */
+        private function get_path_and_query(string $url): array
+        {
+            $parts = wp_parse_url($url);
+            if (!is_array($parts)) {
+                return ['/', ''];
+            }
+
+            $path = $parts['path'] ?? '/';
+            $query = $parts['query'] ?? '';
+
+            return [$path, $query];
+        }
+
+        /**
          * Replace the host portion of a URL.
          */
         private function swap_host_in_url(string $url, string $host): string
@@ -714,7 +841,7 @@ if (!class_exists('WP_Varnish_Cache_Purger')) {
         /**
          * Dispatch an HTTP PURGE request to Varnish.
          */
-        private function send_purge_request(string $url, string $context = 'manual'): void
+        private function send_purge_request(string $url, string $context = 'manual', string $host_header = ''): void
         {
             if ('' === $url) {
                 return;
@@ -729,6 +856,9 @@ if (!class_exists('WP_Varnish_Cache_Purger')) {
             $settings = $this->get_settings();
             if (!empty($settings['header_name']) && !empty($settings['header_value'])) {
                 $args['headers'][$settings['header_name']] = $settings['header_value'];
+            }
+            if ('' !== $host_header) {
+                $args['headers']['Host'] = $host_header;
             }
 
             $response = wp_remote_request($url, $args);
@@ -778,6 +908,7 @@ if (!class_exists('WP_Varnish_Cache_Purger')) {
         {
             return [
                 'hosts'             => [untrailingslashit(home_url())],
+                'purge_server'      => '',
                 'schedule_interval' => 'hourly',
                 'scheduled_paths'   => ['/'],
                 'daily_time'        => '02:00',
