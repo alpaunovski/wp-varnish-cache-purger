@@ -235,6 +235,11 @@ if (!class_exists('WP_Varnish_Cache_Purger')) {
                 'display'  => __('Every Fifteen Minutes', 'wp-varnish-cache-purger'),
             ];
 
+            $schedules['weekly'] = [
+                'interval' => 7 * DAY_IN_SECONDS,
+                'display'  => __('Weekly', 'wp-varnish-cache-purger'),
+            ];
+
             return $schedules;
         }
 
@@ -407,12 +412,12 @@ if (!class_exists('WP_Varnish_Cache_Purger')) {
             $field_id = 'wp_vcp_schedule';
             $name     = self::OPTION_NAME . '[schedule_interval]';
             $current  = $settings['schedule_interval'];
-            $schedules = wp_get_schedules();
+            $supported = $this->get_supported_schedules();
             ?>
             <select id="<?php echo esc_attr($field_id); ?>" name="<?php echo esc_attr($name); ?>">
-                <?php foreach ($schedules as $slug => $schedule) : ?>
+                <?php foreach ($supported as $slug => $label) : ?>
                     <option value="<?php echo esc_attr($slug); ?>" <?php selected($slug, $current); ?>>
-                        <?php echo esc_html($schedule['display']); ?>
+                        <?php echo esc_html($label); ?>
                     </option>
                 <?php endforeach; ?>
             </select>
@@ -593,6 +598,7 @@ if (!class_exists('WP_Varnish_Cache_Purger')) {
         {
             $defaults = $this->get_default_settings();
             $sanitized = $defaults;
+            $supported_schedules = array_keys($this->get_supported_schedules());
 
             if (is_array($raw)) {
                 if (!empty($raw['hosts'])) {
@@ -612,7 +618,7 @@ if (!class_exists('WP_Varnish_Cache_Purger')) {
                 if (!empty($raw['schedule_interval'])) {
                     $candidate = sanitize_key($raw['schedule_interval']);
                     $schedules = wp_get_schedules();
-                    if (isset($schedules[$candidate])) {
+                    if (in_array($candidate, $supported_schedules, true) && isset($schedules[$candidate])) {
                         $sanitized['schedule_interval'] = $candidate;
                     }
                 }
@@ -960,6 +966,11 @@ if (!class_exists('WP_Varnish_Cache_Purger')) {
             $defaults = $this->get_default_settings();
             $settings = $settings_override ? wp_parse_args($settings_override, $defaults) : $this->get_settings();
             $interval = $custom_interval ?: $settings['schedule_interval'];
+            $supported = $this->get_supported_schedules();
+
+            if (!isset($supported[$interval])) {
+                $interval = $defaults['schedule_interval'];
+            }
 
             $schedules = wp_get_schedules();
             if (!isset($schedules[$interval])) {
@@ -975,6 +986,23 @@ if (!class_exists('WP_Varnish_Cache_Purger')) {
 
             wp_clear_scheduled_hook(self::CRON_HOOK);
             wp_schedule_event($timestamp, $interval, self::CRON_HOOK);
+        }
+
+        /**
+         * Get the list of supported schedule intervals for the UI.
+         *
+         * @return array<string,string>
+         */
+        private function get_supported_schedules(): array
+        {
+            return [
+                'five_minutes'    => __('Every Five Minutes', 'wp-varnish-cache-purger'),
+                'fifteen_minutes' => __('Every Fifteen Minutes', 'wp-varnish-cache-purger'),
+                'hourly'          => __('Hourly', 'wp-varnish-cache-purger'),
+                'twicedaily'      => __('Twice Daily', 'wp-varnish-cache-purger'),
+                'daily'           => __('Daily', 'wp-varnish-cache-purger'),
+                'weekly'          => __('Weekly', 'wp-varnish-cache-purger'),
+            ];
         }
 
         /**
