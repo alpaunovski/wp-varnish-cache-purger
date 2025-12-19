@@ -8,6 +8,8 @@
  * License:           GPL-2.0-or-later
  * License URI:       https://www.gnu.org/licenses/gpl-2.0.html
  * Text Domain:       wp-varnish-cache-purger
+ * This file is 100% Codex generated. I told Codex to thighten the security, but I can't be sure it did.
+ * I guarantee nothing. Use at your own risk.
  */
 
 if (!defined('ABSPATH')) {
@@ -88,6 +90,7 @@ if (!class_exists('WP_Varnish_Cache_Purger')) {
                 [
                     'type'              => 'array',
                     'sanitize_callback' => [$this, 'sanitize_settings'],
+                    'capability'        => 'manage_options',
                     'default'           => $this->get_default_settings(),
                 ]
             );
@@ -356,6 +359,7 @@ if (!class_exists('WP_Varnish_Cache_Purger')) {
             ?>
             <div class="wrap">
                 <h1><?php esc_html_e('Varnish Cache Purger', 'wp-varnish-cache-purger'); ?></h1>
+                <?php settings_errors('wp_vcp_settings'); ?>
                 <form action="options.php" method="post">
                     <?php
                     settings_fields('wp_vcp_settings');
@@ -409,7 +413,7 @@ if (!class_exists('WP_Varnish_Cache_Purger')) {
                 placeholder="varnish.internal:6081"
             />
             <p class="description">
-                <?php esc_html_e('Send PURGE requests to this server (bypassing CDN/proxy). Host header is set from each endpoint above. Leave blank to purge the public URLs directly.', 'wp-varnish-cache-purger'); ?>
+                <?php esc_html_e('Send PURGE requests to this server (bypassing CDN/proxy). Only 127.0.0.1 with an optional port is allowed. Host header is set from each endpoint above. Leave blank to purge the public URLs directly.', 'wp-varnish-cache-purger'); ?>
             </p>
             <?php
         }
@@ -637,12 +641,21 @@ if (!class_exists('WP_Varnish_Cache_Purger')) {
             $supported_schedules = array_keys($this->get_supported_schedules());
 
             if (is_array($raw)) {
+                $raw = wp_unslash($raw);
                 if (!empty($raw['hosts'])) {
                     $sanitized['hosts'] = $this->sanitize_hosts($raw['hosts']);
                 }
 
                 if (!empty($raw['purge_server'])) {
                     $sanitized['purge_server'] = $this->sanitize_purge_server($raw['purge_server']);
+                    if ('' === $sanitized['purge_server']) {
+                        add_settings_error(
+                            'wp_vcp_settings',
+                            'wp_vcp_purge_server_invalid',
+                            __('Direct Varnish server must be 127.0.0.1 with an optional port (for example, 127.0.0.1:6081).', 'wp-varnish-cache-purger'),
+                            'error'
+                        );
+                    }
                 } else {
                     $sanitized['purge_server'] = '';
                 }
@@ -668,8 +681,8 @@ if (!class_exists('WP_Varnish_Cache_Purger')) {
                 $sanitized['purge_on_update']  = !empty($raw['purge_on_update']);
                 $sanitized['purge_home_on_post'] = !empty($raw['purge_home_on_post']);
 
-                $sanitized['header_name']  = isset($raw['header_name']) ? sanitize_text_field($raw['header_name']) : '';
-                $sanitized['header_value'] = isset($raw['header_value']) ? sanitize_text_field($raw['header_value']) : '';
+                $sanitized['header_name']  = isset($raw['header_name']) ? $this->sanitize_header_name($raw['header_name']) : '';
+                $sanitized['header_value'] = isset($raw['header_value']) ? $this->sanitize_header_value($raw['header_value']) : '';
                 $sanitized['verbose_logging'] = !empty($raw['verbose_logging']);
             }
 
@@ -703,6 +716,16 @@ if (!class_exists('WP_Varnish_Cache_Purger')) {
                     continue;
                 }
 
+                $parts = wp_parse_url($line);
+                if (!is_array($parts) || empty($parts['scheme']) || empty($parts['host'])) {
+                    continue;
+                }
+
+                $scheme = strtolower($parts['scheme']);
+                if (!in_array($scheme, ['http', 'https'], true)) {
+                    continue;
+                }
+
                 $hosts[] = untrailingslashit($line);
             }
 
@@ -730,11 +753,13 @@ if (!class_exists('WP_Varnish_Cache_Purger')) {
 
             $paths = [];
             foreach ($lines as $line) {
+                $line = sanitize_text_field($line);
                 $line = trim($line);
                 if ('' === $line) {
                     continue;
                 }
 
+                $line = str_replace(["\r", "\n"], '', $line);
                 $line = '/' . ltrim($line, '/');
                 $paths[] = $line;
             }
@@ -755,13 +780,75 @@ if (!class_exists('WP_Varnish_Cache_Purger')) {
                 return '';
             }
 
+            $server = sanitize_text_field($server);
             $server = trim($server);
             if ('' === $server) {
                 return '';
             }
 
-            $server = rtrim($server, '/');
-            return sanitize_text_field($server);
+            $normalized = $server;
+            if (!preg_match('#^https?://#i', $normalized)) {
+                $normalized = 'http://' . $normalized;
+            }
+
+            $parts = wp_parse_url($normalized);
+            if (!is_array($parts) || empty($parts['host'])) {
+                return '';
+            }
+
+            $host = strtolower($parts['host']);
+            if ('127.0.0.1' !== $host) {
+                return '';
+            }
+
+            $port = '';
+            if (!empty($parts['port'])) {
+                $port_value = (int) $parts['port'];
+                if ($port_value < 1 || $port_value > 65535) {
+                    return '';
+                }
+                $port = ':' . $port_value;
+            }
+
+            return $host . $port;
+        }
+
+        /**
+         * Sanitize a custom header name (token only).
+         */
+        private function sanitize_header_name($name): string
+        {
+            if (!is_string($name)) {
+                return '';
+            }
+
+            $name = sanitize_text_field($name);
+            $name = trim($name);
+            if ('' === $name) {
+                return '';
+            }
+
+            $name = preg_replace('/[^\x21-\x7E]/', '', $name);
+            if (!preg_match("/^[!#$%&'*+\\-.^_`|~0-9A-Za-z]+$/", $name)) {
+                return '';
+            }
+
+            return $name;
+        }
+
+        /**
+         * Sanitize a custom header value (no newlines).
+         */
+        private function sanitize_header_value($value): string
+        {
+            if (!is_string($value)) {
+                return '';
+            }
+
+            $value = sanitize_text_field($value);
+            $value = str_replace(["\r", "\n"], '', $value);
+
+            return trim($value);
         }
 
         /**
@@ -916,6 +1003,13 @@ if (!class_exists('WP_Varnish_Cache_Purger')) {
             ];
 
             $settings = $this->get_settings();
+            if (!$this->is_allowed_purge_url($url, $settings)) {
+                if (!empty($settings['verbose_logging'])) {
+                    $this->log(sprintf('Blocked purge request to %s (%s)', $url, $context));
+                }
+                return;
+            }
+
             if (!empty($settings['header_name']) && !empty($settings['header_value'])) {
                 $args['headers'][$settings['header_name']] = $settings['header_value'];
             }
@@ -1124,6 +1218,39 @@ if (!class_exists('WP_Varnish_Cache_Purger')) {
             if (!empty($settings['verbose_logging'])) {
                 error_log('[WP Varnish Cache Purger] ' . $message);
             }
+        }
+
+        /**
+         * Validate purge request URL against allowed endpoints.
+         *
+         * @param array<string,mixed> $settings
+         */
+        private function is_allowed_purge_url(string $url, array $settings): bool
+        {
+            $parts = wp_parse_url($url);
+            if (!is_array($parts) || empty($parts['scheme']) || empty($parts['host'])) {
+                return false;
+            }
+
+            $scheme = strtolower($parts['scheme']);
+            if (!in_array($scheme, ['http', 'https'], true)) {
+                return false;
+            }
+
+            $host = strtolower($parts['host']);
+            if (!empty($settings['purge_server'])) {
+                return '127.0.0.1' === $host;
+            }
+
+            $allowed_hosts = [];
+            foreach ($settings['hosts'] as $endpoint) {
+                $endpoint_parts = wp_parse_url($endpoint);
+                if (is_array($endpoint_parts) && !empty($endpoint_parts['host'])) {
+                    $allowed_hosts[] = strtolower($endpoint_parts['host']);
+                }
+            }
+
+            return in_array($host, $allowed_hosts, true);
         }
 
         /**
