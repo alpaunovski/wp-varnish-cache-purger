@@ -156,6 +156,14 @@ if (!class_exists('WP_Varnish_Cache_Purger')) {
             );
 
             add_settings_field(
+                'wp_vcp_verbose_logging',
+                __('Verbose Debug Logging', 'wp-varnish-cache-purger'),
+                [$this, 'render_verbose_logging_field'],
+                'wp-vcp',
+                'wp_vcp_general_section'
+            );
+
+            add_settings_field(
                 'wp_vcp_post_purge',
                 __('Automatic Post Purge', 'wp-varnish-cache-purger'),
                 [$this, 'render_post_purge_field'],
@@ -238,12 +246,6 @@ if (!class_exists('WP_Varnish_Cache_Purger')) {
             $settings = $this->get_settings();
             $hosts    = $settings['hosts'];
             $paths    = $settings['scheduled_paths'];
-            $this->log(sprintf(
-                'Scheduled purge started. Hosts: %d, Paths: %d',
-                count($hosts),
-                count($paths)
-            ));
-
             foreach ($hosts as $host) {
                 $host_header = $this->get_host_header_for_endpoint($host);
                 foreach ($paths as $path) {
@@ -539,6 +541,22 @@ if (!class_exists('WP_Varnish_Cache_Purger')) {
         }
 
         /**
+         * Render verbose logging checkbox field.
+         */
+        public function render_verbose_logging_field(): void
+        {
+            $settings = $this->get_settings();
+            ?>
+            <fieldset>
+                <label>
+                    <input type="checkbox" name="<?php echo esc_attr(self::OPTION_NAME . '[verbose_logging]'); ?>" value="1" <?php checked($settings['verbose_logging'], true); ?> />
+                    <?php esc_html_e('Log detailed purge responses to the PHP error log.', 'wp-varnish-cache-purger'); ?>
+                </label>
+            </fieldset>
+            <?php
+        }
+
+        /**
          * Render publish/update purge checkboxes.
          */
         public function render_post_purge_field(): void
@@ -609,6 +627,7 @@ if (!class_exists('WP_Varnish_Cache_Purger')) {
 
                 $sanitized['header_name']  = isset($raw['header_name']) ? sanitize_text_field($raw['header_name']) : '';
                 $sanitized['header_value'] = isset($raw['header_value']) ? sanitize_text_field($raw['header_value']) : '';
+                $sanitized['verbose_logging'] = !empty($raw['verbose_logging']);
             }
 
             return $sanitized;
@@ -861,24 +880,32 @@ if (!class_exists('WP_Varnish_Cache_Purger')) {
                 $args['headers']['Host'] = $host_header;
             }
 
+            if (!empty($settings['verbose_logging'])) {
+                $this->log(sprintf('PURGE %s (%s)', $url, $context));
+            }
+
             $response = wp_remote_request($url, $args);
             if (is_wp_error($response)) {
-                $this->log(sprintf('Failed to purge %s (%s): %s', $url, $context, $response->get_error_message()));
+                error_log(sprintf('[WP Varnish Cache Purger] Failed to purge %s (%s): %s', $url, $context, $response->get_error_message()));
                 return;
             }
 
             $code = (int) wp_remote_retrieve_response_code($response);
             if ($code >= 400) {
-                $body = wp_remote_retrieve_body($response);
-                $headers = wp_remote_retrieve_headers($response);
-                $this->log(sprintf(
-                    'Unexpected response %d while purging %s (%s). Headers: %s. Body: %s',
-                    $code,
-                    $url,
-                    $context,
-                    $this->stringify_headers($headers),
-                    $this->truncate_for_log($body)
-                ));
+                if (!empty($settings['verbose_logging'])) {
+                    $body = wp_remote_retrieve_body($response);
+                    $headers = wp_remote_retrieve_headers($response);
+                    $this->log(sprintf(
+                        'Unexpected response %d while purging %s (%s). Headers: %s. Body: %s',
+                        $code,
+                        $url,
+                        $context,
+                        $this->stringify_headers($headers),
+                        $this->truncate_for_log($body)
+                    ));
+                } else {
+                    error_log(sprintf('[WP Varnish Cache Purger] Unexpected response %d while purging %s (%s)', $code, $url, $context));
+                }
             }
         }
 
@@ -919,6 +946,7 @@ if (!class_exists('WP_Varnish_Cache_Purger')) {
                 'purge_home_on_post' => true,
                 'header_name'       => '',
                 'header_value'      => '',
+                'verbose_logging'   => false,
             ];
         }
 
@@ -947,11 +975,6 @@ if (!class_exists('WP_Varnish_Cache_Purger')) {
 
             wp_clear_scheduled_hook(self::CRON_HOOK);
             wp_schedule_event($timestamp, $interval, self::CRON_HOOK);
-            $this->log(sprintf(
-                'Scheduled purge (re)registered. Interval: %s, Next run (WP timezone): %s',
-                $interval,
-                $this->format_timestamp_for_log($timestamp)
-            ));
         }
 
         /**
@@ -1022,24 +1045,14 @@ if (!class_exists('WP_Varnish_Cache_Purger')) {
         }
 
         /**
-         * Write debug logs when WP_DEBUG is enabled.
+         * Write verbose logs when enabled.
          */
         private function log(string $message): void
         {
-            if (defined('WP_DEBUG') && WP_DEBUG) {
+            $settings = $this->get_settings();
+            if (!empty($settings['verbose_logging'])) {
                 error_log('[WP Varnish Cache Purger] ' . $message);
             }
-        }
-
-        /**
-         * Format timestamps in WordPress timezone for logging.
-         */
-        private function format_timestamp_for_log(int $timestamp): string
-        {
-            $timezone = $this->get_wordpress_timezone();
-            $date = new \DateTimeImmutable('@' . $timestamp);
-
-            return $date->setTimezone($timezone)->format('Y-m-d H:i:s T');
         }
 
         /**
@@ -1088,6 +1101,7 @@ if (!class_exists('WP_Varnish_Cache_Purger')) {
 
             return substr($body, 0, $limit) . '...';
         }
+
     }
 
     WP_Varnish_Cache_Purger::instance();
