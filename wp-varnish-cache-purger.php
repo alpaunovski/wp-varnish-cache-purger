@@ -116,6 +116,14 @@ if (!class_exists('WP_Varnish_Cache_Purger')) {
             );
 
             add_settings_field(
+                'wp_vcp_schedule_enabled',
+                __('Enable Scheduled Purges', 'wp-varnish-cache-purger'),
+                [$this, 'render_schedule_enabled_field'],
+                'wp-vcp',
+                'wp_vcp_general_section'
+            );
+
+            add_settings_field(
                 'wp_vcp_schedule',
                 __('Schedule Interval', 'wp-varnish-cache-purger'),
                 [$this, 'render_schedule_field'],
@@ -249,6 +257,9 @@ if (!class_exists('WP_Varnish_Cache_Purger')) {
         public function run_scheduled_purge(): void
         {
             $settings = $this->get_settings();
+            if (empty($settings['schedule_enabled'])) {
+                return;
+            }
             $hosts    = $settings['hosts'];
             $paths    = $settings['scheduled_paths'];
             foreach ($hosts as $host) {
@@ -423,6 +434,31 @@ if (!class_exists('WP_Varnish_Cache_Purger')) {
             </select>
             <p class="description">
                 <?php esc_html_e('Choose how often the full-site purge should run. Set the exact time below for daily or weekly schedules.', 'wp-varnish-cache-purger'); ?>
+            </p>
+            <?php
+        }
+
+        /**
+         * Render schedule enabled checkbox.
+         */
+        public function render_schedule_enabled_field(): void
+        {
+            $settings   = $this->get_settings();
+            $field_id   = 'wp_vcp_schedule_enabled';
+            $field_name = self::OPTION_NAME . '[schedule_enabled]';
+            ?>
+            <label for="<?php echo esc_attr($field_id); ?>">
+                <input
+                    type="checkbox"
+                    id="<?php echo esc_attr($field_id); ?>"
+                    name="<?php echo esc_attr($field_name); ?>"
+                    value="1"
+                    <?php checked(!empty($settings['schedule_enabled'])); ?>
+                />
+                <?php esc_html_e('Run scheduled purges', 'wp-varnish-cache-purger'); ?>
+            </label>
+            <p class="description">
+                <?php esc_html_e('Disable this to stop scheduled purges without removing the schedule configuration.', 'wp-varnish-cache-purger'); ?>
             </p>
             <?php
         }
@@ -626,6 +662,7 @@ if (!class_exists('WP_Varnish_Cache_Purger')) {
                 $sanitized['daily_time']  = $this->sanitize_time_field($raw['daily_time'] ?? $defaults['daily_time'], $defaults['daily_time']);
                 $sanitized['weekly_time'] = $this->sanitize_time_field($raw['weekly_time'] ?? $defaults['weekly_time'], $defaults['weekly_time']);
                 $sanitized['weekly_day']  = $this->sanitize_weekday($raw['weekly_day'] ?? $defaults['weekly_day']);
+                $sanitized['schedule_enabled'] = !empty($raw['schedule_enabled']);
 
                 $sanitized['purge_on_publish'] = !empty($raw['purge_on_publish']);
                 $sanitized['purge_on_update']  = !empty($raw['purge_on_update']);
@@ -947,6 +984,7 @@ if (!class_exists('WP_Varnish_Cache_Purger')) {
                 'daily_time'        => '02:00',
                 'weekly_day'        => 1,
                 'weekly_time'       => '03:00',
+                'schedule_enabled'  => true,
                 'purge_on_publish'  => true,
                 'purge_on_update'   => true,
                 'purge_home_on_post' => true,
@@ -967,6 +1005,11 @@ if (!class_exists('WP_Varnish_Cache_Purger')) {
             $settings = $settings_override ? wp_parse_args($settings_override, $defaults) : $this->get_settings();
             $interval = $custom_interval ?: $settings['schedule_interval'];
             $supported = $this->get_supported_schedules();
+
+            if (empty($settings['schedule_enabled'])) {
+                wp_clear_scheduled_hook(self::CRON_HOOK);
+                return;
+            }
 
             if (!isset($supported[$interval])) {
                 $interval = $defaults['schedule_interval'];
